@@ -30,5 +30,30 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.8,
     },
+    {
+      url: `${siteUrl.origin}/resources`,
+      changeFrequency: "weekly",
+      priority: 0.8,
+    },
+    {
+      url: `${siteUrl.origin}/about`,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
+      url: `${siteUrl.origin}/contact`,
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
+      url: `${siteUrl.origin}/privacy`,
+      changeFrequency: "monthly",
+      priority: 0.6,
+    },
+    {
+      url: `${siteUrl.origin}/terms`,
+      changeFrequency: "monthly",
+      priority: 0.6,
+    },
   ];
 }

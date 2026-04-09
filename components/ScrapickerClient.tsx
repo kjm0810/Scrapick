@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import SiteFooter from "@/components/SiteFooter";
 import SiteHeader, { type SiteHeaderNavItem } from "@/components/SiteHeader";
 import { useScraperState, type ScraperStatus } from "@/hooks/useScraperState";
 import type { SiteLocale } from "@/lib/locale";
@@ -56,6 +57,8 @@ const UI_TEXT = {
     navLanding: "랜딩",
     navGuide: "가이드",
     navFaq: "FAQ",
+    navResources: "리소스",
+    navAbout: "소개",
     subtitle: "대형 사이트 대응을 위해 서버 브라우저(Playwright)로 페이지를 렌더링해 분석합니다.",
     status: "상태",
     inputPlaceholder: "https://example.com",
@@ -95,10 +98,6 @@ const UI_TEXT = {
     errorRequest: "서버 렌더링 요청에 실패했습니다.",
     csvFileName: "scrapicker-results.csv",
     jsonFileName: "scrapicker-results.json",
-    footerTitle: "문의 및 제휴",
-    footerDescription: "서비스 관련 문의는 아래 이메일로 연락 주세요.",
-    footerEmailLabel: "문의 이메일",
-    footerCopyright: "All rights reserved.",
   },
   en: {
     title: "scrapicker",
@@ -108,6 +107,8 @@ const UI_TEXT = {
     navLanding: "Landing",
     navGuide: "Guide",
     navFaq: "FAQ",
+    navResources: "Resources",
+    navAbout: "About",
     subtitle: "Renders target pages with a server-side browser (Playwright) to support large websites.",
     status: "Status",
     inputPlaceholder: "https://example.com",
@@ -148,10 +149,6 @@ const UI_TEXT = {
     errorRequest: "Failed to request server rendering.",
     csvFileName: "scrapicker-results.csv",
     jsonFileName: "scrapicker-results.json",
-    footerTitle: "Contact",
-    footerDescription: "For support or partnership inquiries, reach out by email.",
-    footerEmailLabel: "Contact Email",
-    footerCopyright: "All rights reserved.",
   },
 } as const;
 
@@ -505,6 +502,8 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
     { key: "landing", href: "/landing", label: t.navLanding, isActive: false },
     { key: "guide", href: "/guide", label: t.navGuide, isActive: false },
     { key: "faq", href: "/faq", label: t.navFaq, isActive: false },
+    { key: "resources", href: "/resources", label: t.navResources, isActive: false },
+    { key: "about", href: "/about", label: t.navAbout, isActive: false },
   ];
 
   return (
@@ -773,21 +772,7 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
 
       </main>
 
-      <footer className="border-t border-slate-200 bg-slate-950 text-slate-100">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-5 sm:px-6 sm:py-6">
-          <div>
-            <h2 className="text-sm font-semibold">{t.footerTitle}</h2>
-            <p className="mt-1 text-sm text-slate-300">{t.footerDescription}</p>
-          </div>
-          <p className="flex flex-wrap items-center gap-x-1 gap-y-1 text-sm text-slate-200">
-            <span>{t.footerEmailLabel}:</span>
-            <a className="font-medium text-teal-300 underline-offset-2 hover:underline" href="mailto:kimjungmin988@gmail.com">
-              kimjungmin988@gmail.com
-            </a>
-          </p>
-          <p className="text-xs text-slate-400">© {new Date().getFullYear()} scrapicker. {t.footerCopyright}</p>
-        </div>
-      </footer>
+      <SiteFooter locale={locale} />
     </div>
   );
 }

@@ -2,13 +2,14 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import SiteHeader, { type SiteHeaderNavItem } from "@/components/SiteHeader";
+import SiteFooter from "@/components/SiteFooter";
 import type { SiteLocale } from "@/lib/locale";
 
-type MarketingPage = "landing" | "guide" | "faq";
+type MarketingPage = "landing" | "guide" | "faq" | "resources" | "about";
 
 interface MarketingFrameProps {
   locale: SiteLocale;
-  currentPage: MarketingPage;
+  currentPage?: MarketingPage;
   title: string;
   description: string;
   children: ReactNode;
@@ -21,11 +22,9 @@ const UI_TEXT = {
     landing: "랜딩",
     guide: "가이드",
     faq: "FAQ",
+    resources: "리소스",
+    about: "소개",
     homeCta: "스크래퍼 열기",
-    footerTitle: "문의 및 제휴",
-    footerDescription: "서비스 관련 문의는 아래 이메일로 연락 주세요.",
-    footerEmailLabel: "문의 이메일",
-    footerCopyright: "All rights reserved.",
   },
   en: {
     badge: "AI Visual Web Scraper",
@@ -33,11 +32,9 @@ const UI_TEXT = {
     landing: "Landing",
     guide: "Guide",
     faq: "FAQ",
+    resources: "Resources",
+    about: "About",
     homeCta: "Open Scraper",
-    footerTitle: "Contact",
-    footerDescription: "For support or partnership inquiries, reach out by email.",
-    footerEmailLabel: "Contact Email",
-    footerCopyright: "All rights reserved.",
   },
 } as const;
 
@@ -54,6 +51,8 @@ export default function MarketingFrame({
     { key: "landing", href: "/landing", label: t.landing, isActive: currentPage === "landing" },
     { key: "guide", href: "/guide", label: t.guide, isActive: currentPage === "guide" },
     { key: "faq", href: "/faq", label: t.faq, isActive: currentPage === "faq" },
+    { key: "resources", href: "/resources", label: t.resources, isActive: currentPage === "resources" },
+    { key: "about", href: "/about", label: t.about, isActive: currentPage === "about" },
   ];
 
   return (
@@ -81,21 +80,7 @@ export default function MarketingFrame({
         {children}
       </main>
 
-      <footer className="border-t border-slate-200 bg-slate-950 text-slate-100">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-5 sm:px-6 sm:py-6">
-          <div>
-            <h2 className="text-sm font-semibold">{t.footerTitle}</h2>
-            <p className="mt-1 text-sm text-slate-300">{t.footerDescription}</p>
-          </div>
-          <p className="flex flex-wrap items-center gap-x-1 gap-y-1 text-sm text-slate-200">
-            <span>{t.footerEmailLabel}:</span>
-            <a className="font-medium text-teal-300 underline-offset-2 hover:underline" href="mailto:kimjungmin988@gmail.com">
-              kimjungmin988@gmail.com
-            </a>
-          </p>
-          <p className="text-xs text-slate-400">© {new Date().getFullYear()} scrapicker. {t.footerCopyright}</p>
-        </div>
-      </footer>
+      <SiteFooter locale={locale} />
     </div>
   );
 }

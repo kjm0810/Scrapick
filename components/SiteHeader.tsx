@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -33,6 +32,7 @@ export default function SiteHeader({
           <Link href="/" className="flex min-w-0 items-center gap-3">
             <div className="min-w-0">
               <p className="truncate font-semibold tracking-tight text-slate-900 sm:text-[0px]" style={{display:'none'}}>{brandTitle}</p>
+              <span className="sr-only">{logoAlt}</span>
               <div className="logo"></div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-700">{badge}</p>
             </div>

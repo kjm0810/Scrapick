@@ -6,6 +6,7 @@ import { Analytics } from "@vercel/analytics/next";
 
 import { ADSENSE_CLIENT, ADSENSE_SCRIPT_SRC } from "@/lib/adsense";
 import { detectLocaleFromHeaders } from "@/lib/locale";
+import { getSiteUrl } from "@/lib/site-url";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -36,6 +37,22 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const locale = detectLocaleFromHeaders(await headers());
+  const siteUrl = getSiteUrl();
+  const siteOrigin = siteUrl?.origin ?? "https://scrapicker.app";
+  const organizationSchema = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "scrapicker",
+    url: siteOrigin,
+    email: "kimjungmin988@gmail.com",
+  };
+  const websiteSchema = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: "scrapicker",
+    url: siteOrigin,
+    inLanguage: ["ko-KR", "en-US"],
+  };
 
   return (
     <html
@@ -44,6 +61,14 @@ export default async function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         {children}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationSchema) }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
+        />
         <Analytics />
         <Script
           id="adsense-script"
