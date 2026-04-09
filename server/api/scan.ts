@@ -1,5 +1,5 @@
 import type { ExtractedItem, ItemCategory, ScanResponse } from "@/types/scraper";
-import { getBrowser } from "@/server/playwright/browser";
+import { getBrowser, resetBrowser } from "@/server/playwright/browser";
 
 const ABSOLUTE_PROTOCOL_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 const MAX_AUTO_SCROLL_MS = 22000;
@@ -108,24 +108,57 @@ function sanitizeExtractedItems(items: RawExtractedItem[]): ExtractedItem[] {
   return normalized;
 }
 
+const CONTEXT_OPTIONS = {
+  viewport: {
+    width: 1366,
+    height: 860,
+  },
+  locale: "en-US",
+  timezoneId: "UTC",
+  userAgent:
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  javaScriptEnabled: true,
+  ignoreHTTPSErrors: true,
+} as const;
+
+function isClosedTargetError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /target page, context or browser has been closed|browser has been closed|context.*closed/i.test(
+    error.message.toLowerCase(),
+  );
+}
+
+async function createScanSession() {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const browser = await getBrowser();
+
+    try {
+      const context = await browser.newContext(CONTEXT_OPTIONS);
+      const page = await context.newPage();
+      return { context, page };
+    } catch (error) {
+      lastError = error;
+
+      if (attempt === 0 && isClosedTargetError(error)) {
+        await resetBrowser();
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Failed to create browser context.");
+}
+
 export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanResponse> {
   const targetUrl = ensureHttpUrl(rawUrl);
-  const browser = await getBrowser();
-
-  const context = await browser.newContext({
-    viewport: {
-      width: 1366,
-      height: 860,
-    },
-    locale: "en-US",
-    timezoneId: "UTC",
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    javaScriptEnabled: true,
-    ignoreHTTPSErrors: true,
-  });
-
-  const page = await context.newPage();
+  const { context, page } = await createScanSession();
 
   try {
     page.setDefaultNavigationTimeout(45000);
