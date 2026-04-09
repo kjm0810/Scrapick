@@ -2,10 +2,17 @@ import type { ExtractedItem, ItemCategory, ScanResponse } from "@/types/scraper"
 import { getBrowser, resetBrowser } from "@/server/playwright/browser";
 
 const ABSOLUTE_PROTOCOL_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
-const MAX_AUTO_SCROLL_MS = 22000;
-const MAX_AUTO_SCROLL_PASSES = 120;
-const STABLE_ROUNDS_TO_STOP = 5;
-const MAX_CAPTURE_HEIGHT = 42000;
+const SCAN_MAX_AUTO_SCROLL_MS = 9000;
+const SCAN_MAX_AUTO_SCROLL_PASSES = 48;
+const SCAN_STABLE_ROUNDS_TO_STOP = 3;
+const SCAN_MAX_CAPTURE_HEIGHT = 26000;
+const PREVIEW_NETWORK_IDLE_TIMEOUT_MS = 1800;
+const SCAN_NETWORK_IDLE_TIMEOUT_MS = 5000;
+const PREVIEW_SETTLE_TIMEOUT_MS = 260;
+const SCAN_SETTLE_TIMEOUT_MS = 520;
+const POST_SCROLL_NETWORK_IDLE_TIMEOUT_MS = 2000;
+const PREVIEW_OPERATION_TIMEOUT_MS = 32000;
+const SCAN_OPERATION_TIMEOUT_MS = 45000;
 
 type ScanMode = "preview" | "scan";
 
@@ -159,18 +166,22 @@ async function createScanSession() {
 export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanResponse> {
   const targetUrl = ensureHttpUrl(rawUrl);
   const { context, page } = await createScanSession();
+  const operationTimeout = mode === "scan" ? SCAN_OPERATION_TIMEOUT_MS : PREVIEW_OPERATION_TIMEOUT_MS;
+  const initialNetworkIdleTimeout =
+    mode === "scan" ? SCAN_NETWORK_IDLE_TIMEOUT_MS : PREVIEW_NETWORK_IDLE_TIMEOUT_MS;
+  const settleTimeout = mode === "scan" ? SCAN_SETTLE_TIMEOUT_MS : PREVIEW_SETTLE_TIMEOUT_MS;
 
   try {
-    page.setDefaultNavigationTimeout(45000);
-    page.setDefaultTimeout(45000);
+    page.setDefaultNavigationTimeout(operationTimeout);
+    page.setDefaultTimeout(operationTimeout);
 
     await page.goto(targetUrl.href, {
       waitUntil: "domcontentloaded",
-      timeout: 45000,
+      timeout: operationTimeout,
     });
 
-    await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => undefined);
-    await page.waitForTimeout(1200);
+    await page.waitForLoadState("networkidle", { timeout: initialNetworkIdleTimeout }).catch(() => undefined);
+    await page.waitForTimeout(settleTimeout);
 
     await page
       .addStyleTag({
@@ -179,83 +190,103 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
       })
       .catch(() => undefined);
 
-    await page.evaluate(
-      async ({
-        maxMs,
-        maxPasses,
-        stableRoundsToStop,
-        maxCaptureHeight,
-      }: {
-        maxMs: number;
-        maxPasses: number;
-        stableRoundsToStop: number;
-        maxCaptureHeight: number;
-      }) => {
-      const sleep = (ms: number) =>
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, ms);
-        });
-
-      const getScrollHeight = () =>
-        Math.max(
-          document.documentElement.scrollHeight,
-          document.documentElement.clientHeight,
-          document.body?.scrollHeight ?? 0,
-          document.body?.clientHeight ?? 0,
+    if (mode === "scan") {
+      const needsAutoScroll = await page.evaluate(() => {
+        const doc = document.documentElement;
+        const body = document.body;
+        const viewportHeight = Math.max(1, window.innerHeight || 0);
+        const totalHeight = Math.max(
+          doc.scrollHeight,
+          doc.clientHeight,
+          body?.scrollHeight ?? 0,
+          body?.clientHeight ?? 0,
         );
 
-      let previousHeight = getScrollHeight();
-      let stableRounds = 0;
-      const startedAt = Date.now();
+        return totalHeight > viewportHeight * 1.2;
+      });
 
-      for (let index = 0; index < maxPasses; index += 1) {
-        if (Date.now() - startedAt > maxMs) {
-          break;
-        }
+      if (needsAutoScroll) {
+        await page.evaluate(
+          async ({
+            maxMs,
+            maxPasses,
+            stableRoundsToStop,
+            maxCaptureHeight,
+          }: {
+            maxMs: number;
+            maxPasses: number;
+            stableRoundsToStop: number;
+            maxCaptureHeight: number;
+          }) => {
+            const sleep = (ms: number) =>
+              new Promise<void>((resolve) => {
+                setTimeout(resolve, ms);
+              });
 
-        const viewportHeight = Math.max(320, window.innerHeight || 0);
-        const step = Math.max(240, Math.floor(viewportHeight * 0.9));
-        const nextY = window.scrollY + step;
-        window.scrollTo(0, nextY);
-        await sleep(180);
+            const getScrollHeight = () =>
+              Math.max(
+                document.documentElement.scrollHeight,
+                document.documentElement.clientHeight,
+                document.body?.scrollHeight ?? 0,
+                document.body?.clientHeight ?? 0,
+              );
 
-        const nextHeight = getScrollHeight();
-        if (nextHeight >= maxCaptureHeight) {
-          window.scrollTo(0, nextHeight);
-          await sleep(220);
-          break;
-        }
+            let previousHeight = getScrollHeight();
+            let stableRounds = 0;
+            const startedAt = Date.now();
 
-        if (nextHeight > previousHeight + 4) {
-          previousHeight = nextHeight;
-          stableRounds = 0;
-        } else {
-          stableRounds += 1;
-        }
+            for (let index = 0; index < maxPasses; index += 1) {
+              if (Date.now() - startedAt > maxMs) {
+                break;
+              }
 
-        const nearBottom = window.scrollY + viewportHeight >= nextHeight - 6;
-        if (nearBottom && stableRounds >= stableRoundsToStop) {
-          break;
-        }
+              const viewportHeight = Math.max(320, window.innerHeight || 0);
+              const step = Math.max(240, Math.floor(viewportHeight * 0.88));
+              const nextY = window.scrollY + step;
+              window.scrollTo(0, nextY);
+              await sleep(120);
+
+              const nextHeight = getScrollHeight();
+              if (nextHeight >= maxCaptureHeight) {
+                window.scrollTo(0, nextHeight);
+                await sleep(140);
+                break;
+              }
+
+              if (nextHeight > previousHeight + 4) {
+                previousHeight = nextHeight;
+                stableRounds = 0;
+              } else {
+                stableRounds += 1;
+              }
+
+              const nearBottom = window.scrollY + viewportHeight >= nextHeight - 6;
+              if (nearBottom && stableRounds >= stableRoundsToStop) {
+                break;
+              }
+            }
+
+            for (let index = 0; index < 2; index += 1) {
+              window.scrollTo(0, getScrollHeight());
+              await sleep(140);
+            }
+
+            window.scrollTo(0, 0);
+            await sleep(80);
+          },
+          {
+            maxMs: SCAN_MAX_AUTO_SCROLL_MS,
+            maxPasses: SCAN_MAX_AUTO_SCROLL_PASSES,
+            stableRoundsToStop: SCAN_STABLE_ROUNDS_TO_STOP,
+            maxCaptureHeight: SCAN_MAX_CAPTURE_HEIGHT,
+          },
+        );
       }
 
-      for (let index = 0; index < 3; index += 1) {
-        window.scrollTo(0, getScrollHeight());
-        await sleep(220);
-      }
-
-      window.scrollTo(0, 0);
-      await sleep(120);
-      },
-      {
-        maxMs: MAX_AUTO_SCROLL_MS,
-        maxPasses: MAX_AUTO_SCROLL_PASSES,
-        stableRoundsToStop: STABLE_ROUNDS_TO_STOP,
-        maxCaptureHeight: MAX_CAPTURE_HEIGHT,
-      },
-    );
-
-    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => undefined);
+      await page.waitForLoadState("networkidle", { timeout: POST_SCROLL_NETWORK_IDLE_TIMEOUT_MS }).catch(
+        () => undefined,
+      );
+    }
 
     const documentSize = await page.evaluate(() => {
       const doc = document.documentElement;
@@ -362,7 +393,7 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
               outputs.push(item);
             };
 
-            const imageNodes = Array.from(document.querySelectorAll("img")).slice(0, 1200);
+            const imageNodes = Array.from(document.querySelectorAll("img")).slice(0, 900);
             for (const image of imageNodes) {
               const rect = image.getBoundingClientRect();
               const bbox = clipRect(rect);
@@ -390,25 +421,21 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
               document.querySelectorAll(
                 "h1,h2,h3,h4,h5,h6,p,span,a,li,td,th,strong,b,em,small,button,label,div",
               ),
-            ).slice(0, 4000);
+            ).slice(0, 2200);
 
             for (const node of textNodes) {
-              const rect = node.getBoundingClientRect();
-              const bbox = clipRect(rect);
-              if (!bbox) {
-                continue;
-              }
-
               if (node.children.length > 8 && node.tagName.toLowerCase() === "div") {
                 continue;
               }
 
-              const text = collapse((node as HTMLElement).innerText || node.textContent || "");
-              if (!text || text.length < 2) {
+              const text = collapse(node.textContent || (node as HTMLElement).innerText || "");
+              if (!text || text.length < 2 || text.length > 220) {
                 continue;
               }
 
-              if (text.length > 220) {
+              const rect = node.getBoundingClientRect();
+              const bbox = clipRect(rect);
+              if (!bbox) {
                 continue;
               }
 
@@ -429,7 +456,7 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
 
     const screenshot = await page.screenshot({
       type: "jpeg",
-      quality: 68,
+      quality: mode === "scan" ? 52 : 40,
       fullPage: true,
       animations: "disabled",
     });
