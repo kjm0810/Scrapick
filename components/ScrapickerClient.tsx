@@ -228,6 +228,10 @@ function waitForPaint() {
   });
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function isScanResponsePayload(payload: unknown): payload is ScanResponse {
   if (!payload || typeof payload !== "object") {
     return false;
@@ -257,13 +261,25 @@ function isScanJobStatusPayload(payload: unknown): payload is ScanJobStatusRespo
   return typeof (payload as ScanJobStatusResponse).jobId === "string" && typeof (payload as ScanJobStatusResponse).status === "string";
 }
 
-async function waitForQueuedScanResult(jobId: string, fallbackMessage: string): Promise<ScanResponse> {
+interface RequestScanOptions {
+  signal?: AbortSignal;
+  onQueued?: (jobId: string) => void;
+}
+
+async function waitForQueuedScanResult(
+  jobId: string,
+  fallbackMessage: string,
+  options?: RequestScanOptions,
+): Promise<ScanResponse> {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < SCAN_POLL_TIMEOUT_MS) {
+    options?.signal?.throwIfAborted();
+
     const response = await fetch(`/api/scan/${encodeURIComponent(jobId)}`, {
       method: "GET",
       cache: "no-store",
+      signal: options?.signal,
     });
     const payload = (await response.json()) as ScanJobStatusResponse & { error?: string };
 
@@ -283,13 +299,22 @@ async function waitForQueuedScanResult(jobId: string, fallbackMessage: string): 
       throw new Error(payload.error || fallbackMessage);
     }
 
+    if (payload.status === "canceled") {
+      throw new Error("Scan job canceled.");
+    }
+
     await sleep(SCAN_POLL_INTERVAL_MS);
   }
 
   throw new Error(`${fallbackMessage} (queue timeout)`);
 }
 
-async function requestScan(url: string, mode: ScanMode, fallbackMessage: string): Promise<ScanResponse> {
+async function requestScan(
+  url: string,
+  mode: ScanMode,
+  fallbackMessage: string,
+  options?: RequestScanOptions,
+): Promise<ScanResponse> {
   const response = await fetch("/api/scan", {
     method: "POST",
     headers: {
@@ -300,6 +325,7 @@ async function requestScan(url: string, mode: ScanMode, fallbackMessage: string)
       mode,
     }),
     cache: "no-store",
+    signal: options?.signal,
   });
 
   const payload = (await response.json()) as ScanResponse | ScanEnqueueResponse | { error?: string };
@@ -313,7 +339,8 @@ async function requestScan(url: string, mode: ScanMode, fallbackMessage: string)
   }
 
   if (isScanEnqueuePayload(payload)) {
-    return await waitForQueuedScanResult(payload.jobId, fallbackMessage);
+    options?.onQueued?.(payload.jobId);
+    return await waitForQueuedScanResult(payload.jobId, fallbackMessage, options);
   }
 
   throw new Error("Unexpected scan response.");
@@ -337,6 +364,8 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
 
   const [urlInput, setUrlInput] = useState(DEFAULT_URL);
   const [snapshot, setSnapshot] = useState<ScanResponse | null>(null);
@@ -345,6 +374,39 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0 });
   const [viewerWidth, setViewerWidth] = useState(0);
   const [visibleRange, setVisibleRange] = useState<{ top: number; bottom: number } | null>(null);
+
+  const clearActiveRequest = useCallback(() => {
+    activeJobIdRef.current = null;
+    activeAbortControllerRef.current = null;
+  }, []);
+
+  const cancelActiveJob = useCallback(async () => {
+    const activeAbortController = activeAbortControllerRef.current;
+    if (activeAbortController) {
+      activeAbortController.abort();
+      activeAbortControllerRef.current = null;
+    }
+
+    const activeJobId = activeJobIdRef.current;
+    activeJobIdRef.current = null;
+    if (!activeJobId) {
+      return;
+    }
+
+    await fetch(`/api/scan/${encodeURIComponent(activeJobId)}`, {
+      method: "DELETE",
+      cache: "no-store",
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const activeAbortController = activeAbortControllerRef.current;
+      if (activeAbortController) {
+        activeAbortController.abort();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const node = viewerRef.current;
@@ -385,17 +447,51 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
     setErrorMessage("");
     resetResults();
     setLoading();
+    await cancelActiveJob();
+
+    const abortController = new AbortController();
+    activeAbortControllerRef.current = abortController;
+    activeJobIdRef.current = null;
 
     try {
-      const payload = await requestScan(targetUrl, "preview", t.errorRequest);
+      const payload = await requestScan(targetUrl, "preview", t.errorRequest, {
+        signal: abortController.signal,
+        onQueued: (jobId) => {
+          activeJobIdRef.current = jobId;
+        },
+      });
+      if (abortController.signal.aborted) {
+        return;
+      }
+
       setSnapshot(payload);
       setViewing();
     } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
+
       const message = error instanceof Error ? error.message : t.errorPreview;
       setErrorMessage(message);
       setIdle();
+    } finally {
+      if (activeAbortControllerRef.current === abortController) {
+        clearActiveRequest();
+      }
     }
-  }, [canLoad, resetResults, setIdle, setLoading, setViewing, t.errorInputUrl, t.errorRequest, t.errorPreview, urlInput]);
+  }, [
+    canLoad,
+    cancelActiveJob,
+    clearActiveRequest,
+    resetResults,
+    setIdle,
+    setLoading,
+    setViewing,
+    t.errorInputUrl,
+    t.errorRequest,
+    t.errorPreview,
+    urlInput,
+  ]);
 
   const animateScanResult = useCallback(async (items: ExtractedItem[]) => {
     setExtractedItems([]);
@@ -425,15 +521,32 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
 
     setErrorMessage("");
     resetResults();
+    await cancelActiveJob();
+
+    const abortController = new AbortController();
+    activeAbortControllerRef.current = abortController;
+    activeJobIdRef.current = null;
 
     try {
       setScanning();
-      const payload = await requestScan(targetUrl, "scan", t.errorRequest);
+      const payload = await requestScan(targetUrl, "scan", t.errorRequest, {
+        signal: abortController.signal,
+        onQueued: (jobId) => {
+          activeJobIdRef.current = jobId;
+        },
+      });
+      if (abortController.signal.aborted) {
+        return;
+      }
 
       setSnapshot(payload);
       await animateScanResult(payload.items);
       setResult();
     } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
+
       const message = error instanceof Error ? error.message : t.errorScan;
       setErrorMessage(message);
 
@@ -442,10 +555,16 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
       } else {
         setIdle();
       }
+    } finally {
+      if (activeAbortControllerRef.current === abortController) {
+        clearActiveRequest();
+      }
     }
   }, [
     animateScanResult,
     isBusy,
+    cancelActiveJob,
+    clearActiveRequest,
     resetResults,
     setIdle,
     setResult,
@@ -458,7 +577,8 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
     urlInput,
   ]);
 
-  const handleReset = useCallback(() => {
+  const handleReset = useCallback(async () => {
+    await cancelActiveJob();
     setErrorMessage("");
     resetResults();
 
@@ -468,7 +588,7 @@ export default function ScrapickerClient({ locale }: ScrapickerClientProps) {
     }
 
     setIdle();
-  }, [resetResults, setIdle, setViewing, snapshot]);
+  }, [cancelActiveJob, resetResults, setIdle, setViewing, snapshot]);
 
   const handleDownloadCsv = useCallback(() => {
     triggerDownload(toCsv(extractedItems), "text/csv;charset=utf-8", t.csvFileName);

@@ -40,6 +40,8 @@ vc env pull
 ### Optional env vars
 
 - `SCAN_JOB_TTL_SECONDS` (default: `1800`)
+- `SCAN_LOW_RESOURCE_MODE` (`1`/`true` recommended in low-memory serverless)
+- `PLAYWRIGHT_TMP_CLEANUP` (default: enabled, cleans stale Playwright temp profiles in `/tmp`)
 
 ## Learn More
 

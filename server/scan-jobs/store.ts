@@ -14,7 +14,7 @@ export interface ScanJobRecord {
   url: string;
   createdAt: string;
   updatedAt: string;
-  status: "queued" | "processing" | "succeeded" | "failed";
+  status: "queued" | "processing" | "succeeded" | "failed" | "canceled";
   error?: string;
   result?: ScanResponse;
 }
@@ -237,6 +237,10 @@ async function updateJob(
   return nextRecord;
 }
 
+function isFinalStatus(status: ScanJobRecord["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "canceled";
+}
+
 export async function createQueuedScanJob(input: {
   jobId: string;
   mode: ScanMode;
@@ -256,28 +260,49 @@ export async function createQueuedScanJob(input: {
 export async function markScanJobProcessing(jobId: string): Promise<void> {
   await updateJob(jobId, (current) => ({
     ...current,
-    status: "processing",
-    updatedAt: new Date().toISOString(),
-    error: undefined,
+    ...(isFinalStatus(current.status)
+      ? {}
+      : {
+          status: "processing",
+          updatedAt: new Date().toISOString(),
+          error: undefined,
+        }),
   }));
 }
 
 export async function markScanJobSucceeded(jobId: string, result: ScanResponse): Promise<void> {
   await updateJob(jobId, (current) => ({
     ...current,
-    status: "succeeded",
-    updatedAt: new Date().toISOString(),
-    error: undefined,
-    result,
+    ...(isFinalStatus(current.status)
+      ? {}
+      : {
+          status: "succeeded",
+          updatedAt: new Date().toISOString(),
+          error: undefined,
+          result,
+        }),
   }));
 }
 
 export async function markScanJobFailed(jobId: string, error: string): Promise<void> {
   await updateJob(jobId, (current) => ({
     ...current,
-    status: "failed",
+    ...(isFinalStatus(current.status)
+      ? {}
+      : {
+          status: "failed",
+          updatedAt: new Date().toISOString(),
+          error,
+        }),
+  }));
+}
+
+export async function markScanJobCanceled(jobId: string): Promise<void> {
+  await updateJob(jobId, (current) => ({
+    ...current,
+    status: "canceled",
     updatedAt: new Date().toISOString(),
-    error,
+    error: undefined,
   }));
 }
 
@@ -289,6 +314,11 @@ export async function getScanJob(jobId: string): Promise<ScanJobRecord | null> {
   }
 
   return record;
+}
+
+export async function isScanJobCanceled(jobId: string): Promise<boolean> {
+  const job = await getScanJob(jobId);
+  return job?.status === "canceled";
 }
 
 export async function tryAcquireScanWorkerLock(ownerId: string): Promise<boolean> {

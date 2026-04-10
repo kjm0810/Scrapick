@@ -3,10 +3,18 @@ import { getBrowser, resetBrowser } from "@/server/playwright/browser";
 import type { Page } from "playwright";
 
 const ABSOLUTE_PROTOCOL_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
-const SCAN_MAX_AUTO_SCROLL_MS = 9000;
-const SCAN_MAX_AUTO_SCROLL_PASSES = 48;
-const SCAN_STABLE_ROUNDS_TO_STOP = 3;
-const SCAN_MAX_CAPTURE_HEIGHT = 26000;
+const DEFAULT_SCAN_MAX_AUTO_SCROLL_MS = 9000;
+const DEFAULT_SCAN_MAX_AUTO_SCROLL_PASSES = 48;
+const DEFAULT_SCAN_STABLE_ROUNDS_TO_STOP = 3;
+const DEFAULT_SCAN_MAX_CAPTURE_HEIGHT = 26000;
+const LOW_RESOURCE_SCAN_MAX_AUTO_SCROLL_MS = 5200;
+const LOW_RESOURCE_SCAN_MAX_AUTO_SCROLL_PASSES = 24;
+const LOW_RESOURCE_SCAN_STABLE_ROUNDS_TO_STOP = 2;
+const LOW_RESOURCE_SCAN_MAX_CAPTURE_HEIGHT = 12000;
+const DEFAULT_SCAN_IMAGE_NODE_LIMIT = 900;
+const DEFAULT_SCAN_TEXT_NODE_LIMIT = 2200;
+const LOW_RESOURCE_SCAN_IMAGE_NODE_LIMIT = 420;
+const LOW_RESOURCE_SCAN_TEXT_NODE_LIMIT = 1100;
 const PREVIEW_NETWORK_IDLE_TIMEOUT_MS = 1800;
 const SCAN_NETWORK_IDLE_TIMEOUT_MS = 5000;
 const PREVIEW_SETTLE_TIMEOUT_MS = 260;
@@ -14,10 +22,18 @@ const SCAN_SETTLE_TIMEOUT_MS = 520;
 const POST_SCROLL_NETWORK_IDLE_TIMEOUT_MS = 2000;
 const PREVIEW_OPERATION_TIMEOUT_MS = 32000;
 const SCAN_OPERATION_TIMEOUT_MS = 45000;
-const SCREENSHOT_MAX_WIDTH = 4096;
-const SCREENSHOT_MAX_HEIGHT = 16000;
-const SCREENSHOT_MAX_PIXELS = 30000000;
-const SCREENSHOT_TIMEOUT_MS = 22000;
+const DEFAULT_SCREENSHOT_MAX_WIDTH = 4096;
+const DEFAULT_SCREENSHOT_MAX_HEIGHT = 16000;
+const DEFAULT_SCREENSHOT_MAX_PIXELS = 30000000;
+const DEFAULT_SCREENSHOT_TIMEOUT_MS = 22000;
+const LOW_RESOURCE_SCREENSHOT_MAX_WIDTH = 2048;
+const LOW_RESOURCE_SCREENSHOT_MAX_HEIGHT = 8000;
+const LOW_RESOURCE_SCREENSHOT_MAX_PIXELS = 11000000;
+const LOW_RESOURCE_SCREENSHOT_TIMEOUT_MS = 15000;
+const DEFAULT_SCAN_SCREENSHOT_QUALITY = 52;
+const DEFAULT_PREVIEW_SCREENSHOT_QUALITY = 40;
+const LOW_RESOURCE_SCAN_SCREENSHOT_QUALITY = 36;
+const LOW_RESOURCE_PREVIEW_SCREENSHOT_QUALITY = 30;
 
 interface RawExtractedItem {
   category: ItemCategory;
@@ -42,6 +58,38 @@ interface ScreenshotCaptureResult {
   buffer: Buffer;
   viewport: CaptureViewport;
 }
+
+interface ScreenshotCaptureProfile {
+  maxWidth: number;
+  maxHeight: number;
+  maxPixels: number;
+  timeoutMs: number;
+  jpegQuality: number;
+}
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+  if (!value) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+
+  return defaultValue;
+}
+
+function isServerlessRuntime(): boolean {
+  return Boolean(
+    process.env.VERCEL || process.env.AWS_REGION || process.env.AWS_EXECUTION_ENV,
+  );
+}
+
+const LOW_RESOURCE_MODE = parseBooleanEnv(process.env.SCAN_LOW_RESOURCE_MODE, isServerlessRuntime());
 
 function ensureHttpUrl(rawUrl: string): URL {
   const input = rawUrl.trim();
@@ -138,8 +186,8 @@ function sanitizeExtractedItems(items: RawExtractedItem[]): ExtractedItem[] {
 
 const CONTEXT_OPTIONS = {
   viewport: {
-    width: 1366,
-    height: 860,
+    width: LOW_RESOURCE_MODE ? 1200 : 1366,
+    height: LOW_RESOURCE_MODE ? 720 : 860,
   },
   locale: "en-US",
   timezoneId: "UTC",
@@ -180,13 +228,36 @@ function computeDocumentViewport(documentSize: { width: number; height: number }
   };
 }
 
-function computeSafeCaptureViewport(viewport: CaptureViewport): CaptureViewport {
-  let width = Math.min(viewport.width, SCREENSHOT_MAX_WIDTH);
-  let height = Math.min(viewport.height, SCREENSHOT_MAX_HEIGHT);
+function getScreenshotCaptureProfile(mode: ScanMode): ScreenshotCaptureProfile {
+  const isScanMode = mode === "scan";
+  const maxWidth = LOW_RESOURCE_MODE ? LOW_RESOURCE_SCREENSHOT_MAX_WIDTH : DEFAULT_SCREENSHOT_MAX_WIDTH;
+  const maxHeight = LOW_RESOURCE_MODE ? LOW_RESOURCE_SCREENSHOT_MAX_HEIGHT : DEFAULT_SCREENSHOT_MAX_HEIGHT;
+  const maxPixels = LOW_RESOURCE_MODE ? LOW_RESOURCE_SCREENSHOT_MAX_PIXELS : DEFAULT_SCREENSHOT_MAX_PIXELS;
+  const timeoutMs = LOW_RESOURCE_MODE ? LOW_RESOURCE_SCREENSHOT_TIMEOUT_MS : DEFAULT_SCREENSHOT_TIMEOUT_MS;
+  const jpegQuality = isScanMode
+    ? LOW_RESOURCE_MODE
+      ? LOW_RESOURCE_SCAN_SCREENSHOT_QUALITY
+      : DEFAULT_SCAN_SCREENSHOT_QUALITY
+    : LOW_RESOURCE_MODE
+      ? LOW_RESOURCE_PREVIEW_SCREENSHOT_QUALITY
+      : DEFAULT_PREVIEW_SCREENSHOT_QUALITY;
+
+  return {
+    maxWidth,
+    maxHeight,
+    maxPixels,
+    timeoutMs,
+    jpegQuality,
+  };
+}
+
+function computeSafeCaptureViewport(viewport: CaptureViewport, profile: ScreenshotCaptureProfile): CaptureViewport {
+  let width = Math.min(viewport.width, profile.maxWidth);
+  let height = Math.min(viewport.height, profile.maxHeight);
 
   const pixels = width * height;
-  if (pixels > SCREENSHOT_MAX_PIXELS) {
-    const ratio = Math.sqrt(SCREENSHOT_MAX_PIXELS / pixels);
+  if (pixels > profile.maxPixels) {
+    const ratio = Math.sqrt(profile.maxPixels / pixels);
     width = Math.max(1, Math.floor(width * ratio));
     height = Math.max(1, Math.floor(height * ratio));
   }
@@ -226,14 +297,15 @@ async function capturePageScreenshot(
   mode: ScanMode,
   documentViewport: CaptureViewport,
 ): Promise<ScreenshotCaptureResult> {
+  const profile = getScreenshotCaptureProfile(mode);
   const screenshotOptions = {
     type: "jpeg" as const,
-    quality: mode === "scan" ? 52 : 40,
+    quality: profile.jpegQuality,
     animations: "disabled" as const,
     caret: "hide" as const,
-    timeout: SCREENSHOT_TIMEOUT_MS,
+    timeout: profile.timeoutMs,
   };
-  const safeViewport = computeSafeCaptureViewport(documentViewport);
+  const safeViewport = computeSafeCaptureViewport(documentViewport, profile);
   const canUseFullPage =
     safeViewport.width === documentViewport.width && safeViewport.height === documentViewport.height;
 
@@ -429,10 +501,16 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
             await sleep(80);
           },
           {
-            maxMs: SCAN_MAX_AUTO_SCROLL_MS,
-            maxPasses: SCAN_MAX_AUTO_SCROLL_PASSES,
-            stableRoundsToStop: SCAN_STABLE_ROUNDS_TO_STOP,
-            maxCaptureHeight: SCAN_MAX_CAPTURE_HEIGHT,
+            maxMs: LOW_RESOURCE_MODE ? LOW_RESOURCE_SCAN_MAX_AUTO_SCROLL_MS : DEFAULT_SCAN_MAX_AUTO_SCROLL_MS,
+            maxPasses: LOW_RESOURCE_MODE
+              ? LOW_RESOURCE_SCAN_MAX_AUTO_SCROLL_PASSES
+              : DEFAULT_SCAN_MAX_AUTO_SCROLL_PASSES,
+            stableRoundsToStop: LOW_RESOURCE_MODE
+              ? LOW_RESOURCE_SCAN_STABLE_ROUNDS_TO_STOP
+              : DEFAULT_SCAN_STABLE_ROUNDS_TO_STOP,
+            maxCaptureHeight: LOW_RESOURCE_MODE
+              ? LOW_RESOURCE_SCAN_MAX_CAPTURE_HEIGHT
+              : DEFAULT_SCAN_MAX_CAPTURE_HEIGHT,
           },
         );
       }
@@ -467,7 +545,8 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
 
     const rawItems =
       mode === "scan"
-        ? await page.evaluate(() => {
+        ? await page.evaluate(
+            ({ imageNodeLimit, textNodeLimit }: { imageNodeLimit: number; textNodeLimit: number }) => {
             const PRICE_REGEX =
               /([$€£¥₩]\s?\d[\d,]*(?:\.\d{1,2})?|\d[\d,]*(?:\.\d{1,2})?\s?(원|krw|usd|eur|jpy|won))/i;
 
@@ -547,7 +626,7 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
               outputs.push(item);
             };
 
-            const imageNodes = Array.from(document.querySelectorAll("img")).slice(0, 900);
+            const imageNodes = Array.from(document.querySelectorAll("img")).slice(0, imageNodeLimit);
             for (const image of imageNodes) {
               const rect = image.getBoundingClientRect();
               const bbox = clipRect(rect);
@@ -575,7 +654,7 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
               document.querySelectorAll(
                 "h1,h2,h3,h4,h5,h6,p,span,a,li,td,th,strong,b,em,small,button,label,div",
               ),
-            ).slice(0, 2200);
+            ).slice(0, textNodeLimit);
 
             for (const node of textNodes) {
               if (node.children.length > 8 && node.tagName.toLowerCase() === "div") {
@@ -605,7 +684,12 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
             }
 
             return outputs;
-          })
+          },
+          {
+            imageNodeLimit: LOW_RESOURCE_MODE ? LOW_RESOURCE_SCAN_IMAGE_NODE_LIMIT : DEFAULT_SCAN_IMAGE_NODE_LIMIT,
+            textNodeLimit: LOW_RESOURCE_MODE ? LOW_RESOURCE_SCAN_TEXT_NODE_LIMIT : DEFAULT_SCAN_TEXT_NODE_LIMIT,
+          },
+        )
         : [];
 
     const documentViewport = computeDocumentViewport(documentSize);

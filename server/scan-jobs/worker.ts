@@ -1,5 +1,6 @@
 import { scanWebPage } from "@/server/api/scan";
 import {
+  isScanJobCanceled,
   markScanJobFailed,
   markScanJobProcessing,
   markScanJobSucceeded,
@@ -33,6 +34,10 @@ export async function runScanJobWorker(message: ScanWorkerMessage): Promise<void
     return;
   }
 
+  if (await isScanJobCanceled(jobId)) {
+    return;
+  }
+
   const lockOwner = `${jobId}:${message.messageId ?? "local"}`;
   const lockAcquired = await tryAcquireScanWorkerLock(lockOwner);
   if (!lockAcquired) {
@@ -40,6 +45,10 @@ export async function runScanJobWorker(message: ScanWorkerMessage): Promise<void
   }
 
   try {
+    if (await isScanJobCanceled(jobId)) {
+      return;
+    }
+
     await markScanJobProcessing(jobId);
 
     let lastError: unknown = null;

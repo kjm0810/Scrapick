@@ -1,6 +1,6 @@
 export type ItemCategory = "image" | "price" | "text";
 export type ScanMode = "preview" | "scan";
-export type ScanJobStatus = "queued" | "processing" | "succeeded" | "failed";
+export type ScanJobStatus = "queued" | "processing" | "succeeded" | "failed" | "canceled";
 
 export interface ScanBbox {
   x: number;
