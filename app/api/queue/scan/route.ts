@@ -8,6 +8,10 @@ interface ScanQueueMessage {
   url?: string;
 }
 
+function isWorkerBusyError(error: unknown): boolean {
+  return error instanceof Error && error.message.toLowerCase().includes("scan worker is busy");
+}
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -26,5 +30,16 @@ export const POST = handleQueueCallback<ScanQueueMessage>(
   },
   {
     visibilityTimeoutSeconds: 900,
+    retry: (error, metadata) => {
+      if (isWorkerBusyError(error)) {
+        if (metadata.deliveryCount > 90) {
+          return { acknowledge: true };
+        }
+
+        return { afterSeconds: 6 };
+      }
+
+      return { afterSeconds: Math.min(90, 6 * Math.max(1, metadata.deliveryCount)) };
+    },
   },
 );

@@ -11,6 +11,8 @@ import type { ScanMode } from "@/types/scraper";
 
 const CALLBACK_MAX_ATTEMPTS = 2;
 const CALLBACK_RETRY_DELAY_MS = 600;
+const LOCK_WAIT_TIMEOUT_MS = 55000;
+const LOCK_WAIT_INTERVAL_MS = 1200;
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => {
@@ -39,7 +41,21 @@ export async function runScanJobWorker(message: ScanWorkerMessage): Promise<void
   }
 
   const lockOwner = `${jobId}:${message.messageId ?? "local"}`;
-  const lockAcquired = await tryAcquireScanWorkerLock(lockOwner);
+  let lockAcquired = false;
+  const startedAt = Date.now();
+  while (!lockAcquired && Date.now() - startedAt < LOCK_WAIT_TIMEOUT_MS) {
+    if (await isScanJobCanceled(jobId)) {
+      return;
+    }
+
+    lockAcquired = await tryAcquireScanWorkerLock(lockOwner);
+    if (lockAcquired) {
+      break;
+    }
+
+    await sleep(LOCK_WAIT_INTERVAL_MS);
+  }
+
   if (!lockAcquired) {
     throw new Error("Scan worker is busy.");
   }

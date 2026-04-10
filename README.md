@@ -43,6 +43,7 @@ vc env pull
 - `SCAN_LOW_RESOURCE_MODE` (`1`/`true` recommended in low-memory serverless)
 - `PLAYWRIGHT_TMP_CLEANUP` (default: enabled, cleans stale Playwright temp profiles in `/tmp`)
 - `PLAYWRIGHT_RESET_BROWSER_AFTER_SCAN` (default: enabled when `SCAN_LOW_RESOURCE_MODE=1`; trades latency for stability)
+- Queue worker uses lock-wait (~55s) + short busy retry (~6s), so the next job starts soon after current one finishes.
 
 ## Learn More
 
