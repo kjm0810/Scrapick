@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
-import { scanWebPage } from "@/server/api/scan";
+import { enqueueScanJob } from "@/server/scan-jobs/queue";
+import { createQueuedScanJob, markScanJobFailed } from "@/server/scan-jobs/store";
+import type { ScanEnqueueResponse, ScanMode } from "@/types/scraper";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 interface ScanRequestBody {
   url?: string;
-  mode?: "preview" | "scan";
+  mode?: ScanMode;
 }
 
 export async function POST(request: NextRequest) {
@@ -20,22 +23,45 @@ export async function POST(request: NextRequest) {
   }
 
   const url = typeof body?.url === "string" ? body.url : "";
-  const mode = body?.mode === "preview" ? "preview" : "scan";
+  const mode: ScanMode = body?.mode === "preview" ? "preview" : "scan";
 
   if (!url.trim()) {
     return NextResponse.json({ error: "Missing required field: url" }, { status: 400 });
   }
 
+  const jobId = randomUUID();
+  const queuedAt = new Date().toISOString();
+
   try {
-    const payload = await scanWebPage(url, mode);
+    await createQueuedScanJob({
+      jobId,
+      mode,
+      url,
+      queuedAt,
+    });
+
+    const { messageId } = await enqueueScanJob({
+      jobId,
+      mode,
+      url,
+    });
+
+    const payload: ScanEnqueueResponse = {
+      jobId,
+      messageId,
+      queuedAt,
+      status: "queued",
+    };
 
     return NextResponse.json(payload, {
+      status: 202,
       headers: {
         "cache-control": "no-store",
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Playwright scan failed.";
+    const message = error instanceof Error ? error.message : "Failed to enqueue scan job.";
+    await markScanJobFailed(jobId, `Queue enqueue failed: ${message}`).catch(() => undefined);
 
     return NextResponse.json(
       {

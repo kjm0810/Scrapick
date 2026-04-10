@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/api/scan": ["./node_modules/@sparticuz/chromium/bin/**"],
+    "/api/queue/scan": ["./node_modules/@sparticuz/chromium/bin/**"],
   },
 };
 

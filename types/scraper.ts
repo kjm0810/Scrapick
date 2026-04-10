@@ -1,4 +1,6 @@
 export type ItemCategory = "image" | "price" | "text";
+export type ScanMode = "preview" | "scan";
+export type ScanJobStatus = "queued" | "processing" | "succeeded" | "failed";
 
 export interface ScanBbox {
   x: number;
@@ -30,4 +32,19 @@ export interface ScanResponse {
   viewport: ScanViewport;
   items: ExtractedItem[];
   fetchedAt: string;
+}
+
+export interface ScanEnqueueResponse {
+  jobId: string;
+  messageId: string | null;
+  queuedAt: string;
+  status: "queued";
+}
+
+export interface ScanJobStatusResponse {
+  jobId: string;
+  status: ScanJobStatus;
+  updatedAt: string;
+  error?: string;
+  result?: ScanResponse;
 }

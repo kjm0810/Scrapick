@@ -1,5 +1,6 @@
-import type { ExtractedItem, ItemCategory, ScanResponse } from "@/types/scraper";
+import type { ExtractedItem, ItemCategory, ScanMode, ScanResponse } from "@/types/scraper";
 import { getBrowser, resetBrowser } from "@/server/playwright/browser";
+import type { Page } from "playwright";
 
 const ABSOLUTE_PROTOCOL_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 const SCAN_MAX_AUTO_SCROLL_MS = 9000;
@@ -13,8 +14,10 @@ const SCAN_SETTLE_TIMEOUT_MS = 520;
 const POST_SCROLL_NETWORK_IDLE_TIMEOUT_MS = 2000;
 const PREVIEW_OPERATION_TIMEOUT_MS = 32000;
 const SCAN_OPERATION_TIMEOUT_MS = 45000;
-
-type ScanMode = "preview" | "scan";
+const SCREENSHOT_MAX_WIDTH = 4096;
+const SCREENSHOT_MAX_HEIGHT = 16000;
+const SCREENSHOT_MAX_PIXELS = 30000000;
+const SCREENSHOT_TIMEOUT_MS = 22000;
 
 interface RawExtractedItem {
   category: ItemCategory;
@@ -28,6 +31,16 @@ interface RawExtractedItem {
     width: number;
     height: number;
   };
+}
+
+interface CaptureViewport {
+  width: number;
+  height: number;
+}
+
+interface ScreenshotCaptureResult {
+  buffer: Buffer;
+  viewport: CaptureViewport;
 }
 
 function ensureHttpUrl(rawUrl: string): URL {
@@ -48,6 +61,14 @@ function ensureHttpUrl(rawUrl: string): URL {
 
 function compactText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeDimension(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.round(value));
 }
 
 function sanitizeExtractedItems(items: RawExtractedItem[]): ExtractedItem[] {
@@ -136,6 +157,139 @@ function isClosedTargetError(error: unknown): boolean {
   return /target page, context or browser has been closed|browser has been closed|context.*closed/i.test(
     error.message.toLowerCase(),
   );
+}
+
+function isScreenshotCaptureError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("pages.captureScreenshot".toLowerCase()) ||
+    message.includes("captureScreenshot".toLowerCase()) ||
+    message.includes("unable to capture screenshot") ||
+    message.includes("protocol error")
+  );
+}
+
+function computeDocumentViewport(documentSize: { width: number; height: number }): CaptureViewport {
+  return {
+    width: normalizeDimension(documentSize.width),
+    height: normalizeDimension(documentSize.height),
+  };
+}
+
+function computeSafeCaptureViewport(viewport: CaptureViewport): CaptureViewport {
+  let width = Math.min(viewport.width, SCREENSHOT_MAX_WIDTH);
+  let height = Math.min(viewport.height, SCREENSHOT_MAX_HEIGHT);
+
+  const pixels = width * height;
+  if (pixels > SCREENSHOT_MAX_PIXELS) {
+    const ratio = Math.sqrt(SCREENSHOT_MAX_PIXELS / pixels);
+    width = Math.max(1, Math.floor(width * ratio));
+    height = Math.max(1, Math.floor(height * ratio));
+  }
+
+  return { width, height };
+}
+
+function clipRawItemsToViewport(items: RawExtractedItem[], viewport: CaptureViewport): RawExtractedItem[] {
+  return items.flatMap((item) => {
+    const left = Math.max(0, item.bbox.x);
+    const top = Math.max(0, item.bbox.y);
+    const right = Math.min(viewport.width, item.bbox.x + item.bbox.width);
+    const bottom = Math.min(viewport.height, item.bbox.y + item.bbox.height);
+    const width = right - left;
+    const height = bottom - top;
+
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+      return [];
+    }
+
+    return [
+      {
+        ...item,
+        bbox: {
+          x: left,
+          y: top,
+          width,
+          height,
+        },
+      },
+    ];
+  });
+}
+
+async function capturePageScreenshot(
+  page: Page,
+  mode: ScanMode,
+  documentViewport: CaptureViewport,
+): Promise<ScreenshotCaptureResult> {
+  const screenshotOptions = {
+    type: "jpeg" as const,
+    quality: mode === "scan" ? 52 : 40,
+    animations: "disabled" as const,
+    caret: "hide" as const,
+    timeout: SCREENSHOT_TIMEOUT_MS,
+  };
+  const safeViewport = computeSafeCaptureViewport(documentViewport);
+  const canUseFullPage =
+    safeViewport.width === documentViewport.width && safeViewport.height === documentViewport.height;
+
+  if (canUseFullPage) {
+    try {
+      const buffer = await page.screenshot({
+        ...screenshotOptions,
+        fullPage: true,
+      });
+
+      return {
+        buffer,
+        viewport: documentViewport,
+      };
+    } catch (error) {
+      if (!isScreenshotCaptureError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  try {
+    const buffer = await page.screenshot({
+      ...screenshotOptions,
+      clip: {
+        x: 0,
+        y: 0,
+        width: safeViewport.width,
+        height: safeViewport.height,
+      },
+    });
+
+    return {
+      buffer,
+      viewport: safeViewport,
+    };
+  } catch (error) {
+    if (!isScreenshotCaptureError(error)) {
+      throw error;
+    }
+
+    const viewportSize = page.viewportSize() ?? CONTEXT_OPTIONS.viewport;
+    const fallbackViewport = {
+      width: normalizeDimension(viewportSize.width),
+      height: normalizeDimension(viewportSize.height),
+    };
+    const buffer = await page.screenshot({
+      ...screenshotOptions,
+      fullPage: false,
+    });
+
+    return {
+      buffer,
+      viewport: fallbackViewport,
+    };
+  }
 }
 
 async function createScanSession() {
@@ -454,23 +608,17 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
           })
         : [];
 
-    const screenshot = await page.screenshot({
-      type: "jpeg",
-      quality: mode === "scan" ? 52 : 40,
-      fullPage: true,
-      animations: "disabled",
-    });
+    const documentViewport = computeDocumentViewport(documentSize);
+    const captureResult = await capturePageScreenshot(page, mode, documentViewport);
+    const clippedItems = clipRawItemsToViewport(rawItems, captureResult.viewport);
 
     return {
       resolvedUrl: page.url(),
       title: await page.title(),
       screenshotMimeType: "image/jpeg",
-      screenshotBase64: screenshot.toString("base64"),
-      viewport: {
-        width: Math.max(1, Math.round(documentSize.width)),
-        height: Math.max(1, Math.round(documentSize.height)),
-      },
-      items: sanitizeExtractedItems(rawItems),
+      screenshotBase64: captureResult.buffer.toString("base64"),
+      viewport: captureResult.viewport,
+      items: sanitizeExtractedItems(clippedItems),
       fetchedAt: new Date().toISOString(),
     };
   } catch (error) {

@@ -7,9 +7,14 @@ import SiteFooter from "@/components/SiteFooter";
 import SiteHeader, { type SiteHeaderNavItem } from "@/components/SiteHeader";
 import { useScraperState, type ScraperStatus } from "@/hooks/useScraperState";
 import type { SiteLocale } from "@/lib/locale";
-import type { ExtractedItem, ItemCategory, ScanResponse } from "@/types/scraper";
-
-type ScanMode = "preview" | "scan";
+import type {
+  ExtractedItem,
+  ItemCategory,
+  ScanEnqueueResponse,
+  ScanJobStatusResponse,
+  ScanMode,
+  ScanResponse,
+} from "@/types/scraper";
 
 interface ScrapickerClientProps {
   locale: SiteLocale;
@@ -17,6 +22,8 @@ interface ScrapickerClientProps {
 
 const DEFAULT_URL = "https://books.toscrape.com/";
 const CATEGORY_ORDER: ItemCategory[] = ["image", "price", "text"];
+const SCAN_POLL_INTERVAL_MS = 850;
+const SCAN_POLL_TIMEOUT_MS = 180000;
 
 const CATEGORY_LABELS: Record<SiteLocale, Record<ItemCategory, string>> = {
   ko: {
@@ -221,6 +228,67 @@ function waitForPaint() {
   });
 }
 
+function isScanResponsePayload(payload: unknown): payload is ScanResponse {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  return (
+    typeof (payload as ScanResponse).screenshotBase64 === "string" &&
+    typeof (payload as ScanResponse).screenshotMimeType === "string" &&
+    Boolean((payload as ScanResponse).viewport)
+  );
+}
+
+function isScanEnqueuePayload(payload: unknown): payload is ScanEnqueueResponse {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const queuePayload = payload as ScanEnqueueResponse;
+  return typeof queuePayload.jobId === "string" && queuePayload.status === "queued";
+}
+
+function isScanJobStatusPayload(payload: unknown): payload is ScanJobStatusResponse {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  return typeof (payload as ScanJobStatusResponse).jobId === "string" && typeof (payload as ScanJobStatusResponse).status === "string";
+}
+
+async function waitForQueuedScanResult(jobId: string, fallbackMessage: string): Promise<ScanResponse> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < SCAN_POLL_TIMEOUT_MS) {
+    const response = await fetch(`/api/scan/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as ScanJobStatusResponse & { error?: string };
+
+    if (!response.ok) {
+      throw new Error(payload.error || fallbackMessage);
+    }
+
+    if (!isScanJobStatusPayload(payload)) {
+      throw new Error("Invalid queue status payload.");
+    }
+
+    if (payload.status === "succeeded" && payload.result) {
+      return payload.result;
+    }
+
+    if (payload.status === "failed") {
+      throw new Error(payload.error || fallbackMessage);
+    }
+
+    await sleep(SCAN_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`${fallbackMessage} (queue timeout)`);
+}
+
 async function requestScan(url: string, mode: ScanMode, fallbackMessage: string): Promise<ScanResponse> {
   const response = await fetch("/api/scan", {
     method: "POST",
@@ -234,13 +302,21 @@ async function requestScan(url: string, mode: ScanMode, fallbackMessage: string)
     cache: "no-store",
   });
 
-  const payload = (await response.json()) as ScanResponse & { error?: string };
+  const payload = (await response.json()) as ScanResponse | ScanEnqueueResponse | { error?: string };
 
   if (!response.ok) {
-    throw new Error(payload.error || fallbackMessage);
+    throw new Error((payload as { error?: string }).error || fallbackMessage);
   }
 
-  return payload;
+  if (isScanResponsePayload(payload)) {
+    return payload;
+  }
+
+  if (isScanEnqueuePayload(payload)) {
+    return await waitForQueuedScanResult(payload.jobId, fallbackMessage);
+  }
+
+  throw new Error("Unexpected scan response.");
 }
 
 export default function ScrapickerClient({ locale }: ScrapickerClientProps) {

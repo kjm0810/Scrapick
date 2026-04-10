@@ -20,6 +20,27 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Queue-based Scan Flow
+
+`/api/scan` now enqueues scan jobs and returns `202` with a `jobId`.
+The actual Playwright scan runs in the queue callback route and the client polls `/api/scan/[jobId]` until the job is done.
+
+### Required setup (Vercel)
+
+1. Add an Upstash Redis integration (or compatible Redis with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` env vars).
+2. Enable Vercel Queues for this project.
+3. Ensure `vercel.json` is deployed with the queue trigger for topic `scan-jobs`.
+4. Pull env vars locally before `next dev`:
+
+```bash
+vc link
+vc env pull
+```
+
+### Optional env vars
+
+- `SCAN_JOB_TTL_SECONDS` (default: `1800`)
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
