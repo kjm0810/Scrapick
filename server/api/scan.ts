@@ -90,6 +90,10 @@ function isServerlessRuntime(): boolean {
 }
 
 const LOW_RESOURCE_MODE = parseBooleanEnv(process.env.SCAN_LOW_RESOURCE_MODE, isServerlessRuntime());
+const RESET_BROWSER_AFTER_SCAN = parseBooleanEnv(
+  process.env.PLAYWRIGHT_RESET_BROWSER_AFTER_SCAN,
+  LOW_RESOURCE_MODE,
+);
 
 function ensureHttpUrl(rawUrl: string): URL {
   const input = rawUrl.trim();
@@ -710,5 +714,8 @@ export async function scanWebPage(rawUrl: string, mode: ScanMode): Promise<ScanR
     throw new Error(`Playwright scan failed: ${message}`);
   } finally {
     await context.close();
+    if (RESET_BROWSER_AFTER_SCAN) {
+      await resetBrowser().catch(() => undefined);
+    }
   }
 }
