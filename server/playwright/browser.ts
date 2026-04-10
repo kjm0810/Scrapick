@@ -1,13 +1,18 @@
 import chromiumBinary from "@sparticuz/chromium";
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, rm, stat, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type Browser, type LaunchOptions } from "playwright";
 
 let browserPromise: Promise<Browser> | null = null;
 const TMP_ROOT = "/tmp";
-const TMP_CLEANUP_PREFIXES = ["playwright_chromiumdev_profile-", "playwright-artifacts-"];
+const TMP_CLEANUP_PREFIXES = [
+  "playwright_chromiumdev_profile-",
+  "playwright-artifacts-",
+  "playwright-",
+];
 const TMP_CLEANUP_MIN_AGE_MS = 4 * 60 * 1000;
 const TMP_CLEANUP_MAX_ENTRIES = 40;
+const TMP_MIN_FREE_BYTES = 96 * 1024 * 1024;
 
 function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
   if (!value) {
@@ -31,7 +36,20 @@ function isServerlessRuntime(): boolean {
   );
 }
 
-async function cleanupPlaywrightTempFiles(): Promise<void> {
+async function getTmpFreeBytes(): Promise<number | null> {
+  try {
+    const info = await statfs(TMP_ROOT);
+    if (!Number.isFinite(info.bavail) || !Number.isFinite(info.bsize)) {
+      return null;
+    }
+
+    return Math.max(0, info.bavail * info.bsize);
+  } catch {
+    return null;
+  }
+}
+
+async function cleanupPlaywrightTempFiles(forceAggressive = false): Promise<void> {
   const cleanupEnabled = parseBooleanEnv(process.env.PLAYWRIGHT_TMP_CLEANUP, true);
   if (!cleanupEnabled) {
     return;
@@ -39,6 +57,13 @@ async function cleanupPlaywrightTempFiles(): Promise<void> {
 
   try {
     const now = Date.now();
+    const freeBytes = await getTmpFreeBytes();
+    const lowFreeSpace = typeof freeBytes === "number" ? freeBytes < TMP_MIN_FREE_BYTES : false;
+    const aggressiveMode =
+      forceAggressive ||
+      lowFreeSpace ||
+      parseBooleanEnv(process.env.PLAYWRIGHT_TMP_CLEANUP_AGGRESSIVE, isServerlessRuntime());
+    const minAgeMs = aggressiveMode ? 0 : TMP_CLEANUP_MIN_AGE_MS;
     const entries = await readdir(TMP_ROOT, { withFileTypes: true });
     const candidates: string[] = [];
 
@@ -53,7 +78,7 @@ async function cleanupPlaywrightTempFiles(): Promise<void> {
       try {
         const itemStat = await stat(fullPath);
         const ageMs = now - itemStat.mtimeMs;
-        if (ageMs < TMP_CLEANUP_MIN_AGE_MS) {
+        if (ageMs < minAgeMs) {
           continue;
         }
 
@@ -107,6 +132,7 @@ async function launchBrowser(): Promise<Browser> {
   const browser = await chromium.launch(launchOptions);
   browser.on("disconnected", () => {
     browserPromise = null;
+    void cleanupPlaywrightTempFiles(true);
   });
 
   return browser;
@@ -129,7 +155,7 @@ export async function resetBrowser(): Promise<void> {
   } catch {
     // ignore cleanup errors
   } finally {
-    await cleanupPlaywrightTempFiles();
+    await cleanupPlaywrightTempFiles(true);
   }
 }
 
